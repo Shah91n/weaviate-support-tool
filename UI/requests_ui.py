@@ -66,7 +66,6 @@ def render_requests_analyzer_ui():
                     st.success(f"Analyzed {len(pod_analyses)} pod(s) with {total_requests} total requests{provider_text}")
                 else:
                     st.warning("No requests found in any pod logs. This could be due to a recent restarted pod(s) and no requests logged yet. The analyzer looks for HTTP requests (e.g., GET, POST, PUT, DELETE) from the istio-proxy sidecar logs.")
-                    st.spinner.stop()
                     st.stop()
 
             except Exception as e:

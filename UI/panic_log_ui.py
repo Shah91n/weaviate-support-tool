@@ -86,10 +86,7 @@ def render_panic_analyzer_ui():
         
         col1, col2, _ = st.columns([1, 1, 4])
         with col1:
-            if panic_text:
-                analyze_btn = st.button("🔍 Analyze Stack Trace", type="primary", use_container_width=True)
-            else:
-                st.button("🔍 Analyze Stack Trace", type="primary", use_container_width=True, disabled=True)
+            analyze_btn = st.button("🔍 Analyze Stack Trace", type="primary", use_container_width=True)
         with col2:
             st.button("Reset", on_click=reset_panic_analyzer_state, key="reset_manual", type="secondary", use_container_width=True)
 
