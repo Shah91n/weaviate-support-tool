@@ -81,6 +81,7 @@ def render_configuration_analyzer_ui():
                 pod_data.append([
                     pod['name'],
                     pod['status'],
+                    pod.get('image', ''),
                     pod['cpu_request'],
                     pod['cpu_limit'],
                     pod['memory_request'],
@@ -90,15 +91,16 @@ def render_configuration_analyzer_ui():
             # Show pod info in a table
             pod_df = pd.DataFrame(
                 pod_data,
-                columns=['Pod Name', 'Status', 'CPU Request', 'CPU Limit', 'Memory Request', 'Memory Limit']
+                columns=['Pod Name', 'Status', 'Image', 'CPU Request', 'CPU Limit', 'Memory Request', 'Memory Limit']
             )
             st.dataframe(pod_df, hide_index=True, use_container_width=True)
             
             # Pod selection dropdown
+            pod_options = st.session_state['pods']
             selected_pod = st.selectbox(
                 "Select pod to analyze:",
-                [pod['name'] for pod in st.session_state['pods']],
-                format_func=lambda x: f"{x} ({next(p['status'] for p in st.session_state['pods'] if p['name'] == x)})"
+                pod_options,
+                format_func=lambda p: f"{p['name']} ({p['status']})"
             )
             
             col1, col2 = st.columns([1, 1])
@@ -113,14 +115,14 @@ def render_configuration_analyzer_ui():
             
             if analyze_config_btn:
                 try:
-                    with st.spinner(f"Analyzing configuration for {selected_pod}..."):
-                        config_info = configuration_analyzer.analyze_from_cluster(cluster_id, selected_pod)
+                    with st.spinner(f"Analyzing configuration for {selected_pod['name']}..."):
+                        config_info = configuration_analyzer.analyze_from_pod_dict(selected_pod)
 
                         if config_info:
                             st.session_state['configuration_info'] = config_info
-                            st.success(f"✅ Successfully analyzed {selected_pod}")
+                            st.success(f"✅ Successfully analyzed {selected_pod['name']}")
                         else:
-                            st.error("No Weaviate Configuration found in describe output")
+                            st.error("No Weaviate Configuration found in pod details")
                             st.stop()
                 except Exception as e:
                     st.error(f"Failed: {str(e)}")

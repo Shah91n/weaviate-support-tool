@@ -44,10 +44,37 @@ class ConfigurationAnalyzer:
         """Analyze configuration from kubectl describe pod output"""
         print(f"Analyzing configuration for cluster: {cluster_id}, pod: {pod_name}")
         try:
-            # Connect and describe pod
-            self.extractor.connect_to_cluster(cluster_id)
-            describe_text = self.extractor.describe_pod(pod_name)
-            return self.analyze_from_text(describe_text)
+            try:
+                self.extractor.connect_to_cluster(cluster_id)
+                # If the extractor supports get_pod_details, use it to get structured data
+                pod_details = self.extractor.get_pod_details()
+                if pod_details:
+                    # Find matching pod
+                    for p in pod_details:
+                        if p['name'] == pod_name:
+                            env_text = []
+                            for k, v in (p.get('environment') or {}).items():
+                                if v is None:
+                                    env_text.append(f"      {k}: <valueFrom>")
+                                else:
+                                    env_text.append(f"      {k}: {v}")
+
+                            config_text = [
+                                f"Name: {p['name']}",
+                                f"Image: {p.get('image', '')}",
+                                "Environment:",
+                            ] + env_text
+
+                            describe_text = '\n'.join(config_text)
+                            return self.analyze_from_text(describe_text)
+
+                # Fallback to describe_pod text
+                describe_text = self.extractor.describe_pod(pod_name)
+                return self.analyze_from_text(describe_text)
+            except Exception:
+                # On any structured path failure, fallback to original flow
+                describe_text = self.extractor.describe_pod(pod_name)
+                return self.analyze_from_text(describe_text)
         except Exception as e:
             raise Exception(f"Failed to analyze configuration: {str(e)}")
     
@@ -62,6 +89,13 @@ class ConfigurationAnalyzer:
             
             # Extract configuration information
             config_info = self._parse_configuration_info(config_section)
+
+            # If GOMEMLIMIT not found in parsed environment, try a broader scan of the full describe text
+            if 'GOMEMLIMIT' not in config_info.environment:
+                extra_env = self._extract_environment_from_text(describe_text)
+                for k, v in extra_env.items():
+                    if k not in config_info.environment:
+                        config_info.environment[k] = v
             return config_info
 
         except Exception as e:
@@ -249,9 +283,11 @@ class ConfigurationAnalyzer:
         """Analyze GOMEMLIMIT vs memory limits and provide recommendations"""
         print("Analyzing memory configuration...")
         # Extract GOMEMLIMIT
-        gomemlimit_raw = config_info.environment.get('GOMEMLIMIT', '0')
+        # GOMEMLIMIT can appear as '88GiB', '88Gi', or sometimes as a numeric value in parentheses
+        gomemlimit_raw = config_info.environment.get('GOMEMLIMIT') or config_info.environment.get('GOGC') or '0'
+        gomemlimit_raw = str(gomemlimit_raw)
         gomemlimit_gib = self._parse_memory_to_gib(gomemlimit_raw)
-        
+
         # Extract memory limits/requests
         memory_limit_gib = self._parse_memory_to_gib(config_info.memory_limit)
         memory_request_gib = self._parse_memory_to_gib(config_info.memory_request)
@@ -317,26 +353,38 @@ Recommendation:
         
         memory_str = memory_str.strip()
         
-        # Remove any non-alphanumeric characters except for the unit
-        memory_str = re.sub(r'[^\d\w.]', '', memory_str)
-        
-        # Parse different units
-        if memory_str.endswith('Gi') or memory_str.endswith('GiB'):
-            return float(re.sub(r'[^\d.]', '', memory_str))
-        elif memory_str.endswith('Mi') or memory_str.endswith('MiB'):
-            return float(re.sub(r'[^\d.]', '', memory_str)) / 1024.0
-        elif memory_str.endswith('Ki') or memory_str.endswith('KiB'):
-            return float(re.sub(r'[^\d.]', '', memory_str)) / (1024.0 * 1024.0)
-        elif memory_str.endswith('G'):
-            return float(re.sub(r'[^\d.]', '', memory_str)) * 0.9313  # GB to GiB
-        elif memory_str.endswith('M'):
-            return float(re.sub(r'[^\d.]', '', memory_str)) * 0.9313 / 1024.0  # MB to GiB
-        else:
-            # Assume bytes
+        # Normalize: remove commas and surrounding whitespace
+        memory_str = memory_str.strip().replace(',', '')
+
+        # Sometimes values are like '94489280512 (limits.memory)' or '94489280512'
+        # Attempt to extract the first numeric+unit token
+        m = re.search(r'([\d\.]+)\s*(GiB|Gi|MiB|Mi|KiB|Ki|G|M|K|B)?', memory_str, re.IGNORECASE)
+        if not m:
+            # If it's purely a numeric string representing bytes
+            digits = re.sub(r'[^0-9.]', '', memory_str)
             try:
-                return float(memory_str) / (1024.0 ** 3)
+                return float(digits) / (1024.0 ** 3)
             except:
                 return 0.0
+
+        value = float(m.group(1))
+        unit = (m.group(2) or '').lower()
+
+        if unit in ('gib', 'gi'):
+            return value
+        if unit in ('mib', 'mi'):
+            return value / 1024.0
+        if unit in ('kib', 'ki'):
+            return value / (1024.0 * 1024.0)
+        if unit in ('g',):
+            return value * 0.9313
+        if unit in ('m',):
+            return value * 0.9313 / 1024.0
+        if unit in ('b', ''):
+            # value is bytes
+            return value / (1024.0 ** 3)
+        # Fallback
+        return 0.0
 
     def create_summary_dataframe(self, config_info: ConfigurationInfo) -> pd.DataFrame:
         """Create a summary DataFrame of configuration"""
@@ -378,3 +426,25 @@ Recommendation:
         essential_df = pd.DataFrame(essential_data, columns=['Essential Configuration', 'Value'])
         
         return essential_df
+    
+    def analyze_from_pod_dict(self, pod: dict) -> Optional[ConfigurationInfo]:
+        """Analyze configuration directly from pod dict (from get_pod_details)"""
+        print(f"Analyzing configuration from pod dict: {pod.get('name')}")
+        # Use image and environment directly
+        image = pod.get('image', '')
+        environment = pod.get('environment', {})
+        cpu_limit = pod.get('cpu_limit', '')
+        cpu_request = pod.get('cpu_request', '')
+        memory_limit = pod.get('memory_limit', '')
+        memory_request = pod.get('memory_request', '')
+        ports = []
+        return ConfigurationInfo(
+            name=pod.get('name', ''),
+            image=image,
+            ports=ports,
+            cpu_limit=cpu_limit,
+            cpu_request=cpu_request,
+            memory_limit=memory_limit,
+            memory_request=memory_request,
+            environment=environment
+        )

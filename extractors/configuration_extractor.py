@@ -63,11 +63,25 @@ class ConfigurationExtractor:
                 
                 import json
                 pod_json = json.loads(result.stdout)
-                container = pod_json['spec']['containers'][0]  # Main container
-                
+                container = pod_json['spec']['containers'][0]
+
+                # Extract image and environment variables
+                image = container.get('image', '')
+                env_list = container.get('env', []) or []
+                env_map = {}
+                for e in env_list:
+                    name = e.get('name')
+                    # Prefer explicit value; mark valueFrom entries
+                    value = e.get('value')
+                    if value is None and 'valueFrom' in e:
+                        value = '<valueFrom>'
+                    env_map[name] = value if value is not None else ''
+
                 pods.append({
                     "name": pod_name,
                     "status": pod_json['status']['phase'],
+                    "image": image,
+                    "environment": env_map,
                     "cpu_request": container['resources'].get('requests', {}).get('cpu', 'N/A'),
                     "cpu_limit": container['resources'].get('limits', {}).get('cpu', 'N/A'),
                     "memory_request": container['resources'].get('requests', {}).get('memory', 'N/A'),
